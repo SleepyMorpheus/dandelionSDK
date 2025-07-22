@@ -64,8 +64,9 @@ jobs:
       working-directory: ${{ steps.build.outputs.dir }}
       run: tar -czf "dandelion_sdk_${{matrix.build}}_${{matrix.platform}}_${{matrix.cpu}}.tar.gz" dandelion_sdk
     
-    - name: Add to release
-      shell: bash
-      run: gh release upload latest "${{ steps.build.outputs.dir }}/dandelion_sdk_${{matrix.build}}_${{matrix.platform}}_${{matrix.cpu}}.tar.gz" --clobber
-      env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: dandelion_sdk_${{matrix.build}}_${{matrix.platform}}_${{matrix.cpu}}
+        path: ${{ steps.build.outputs.dir }}/dandelion_sdk_${{matrix.build}}_${{matrix.platform}}_${{matrix.cpu}}.tar.gz
+        retention-days: 30
