@@ -71,7 +71,7 @@ int nanosleep(const struct timespec *rqtp, struct timespec *rmtp) {
 
 
 
-time_t time(time_t* t) {
+time_t time(time_t *t) {
   errno = EINVAL;
   return -1;
 }
