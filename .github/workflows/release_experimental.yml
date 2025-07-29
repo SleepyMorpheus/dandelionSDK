@@ -2,8 +2,7 @@ name: release latest with all library versions
 
 on:
   pull_request:
-    branches: [ "dev/staging" ]
-    branches: [ "dev/includes"]
+    branches: [ "dev/staging", "dev/includes" ]
 
 jobs:
   build:
