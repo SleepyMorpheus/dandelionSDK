@@ -1,4 +1,5 @@
 #include <errno.h>
+#include <time.h>
 #include <utime.h>
 
 #undef errno
