@@ -16,7 +16,7 @@ D_File *create_file(Path *name, char *content, size_t length, uint32_t mode) {
   if (new_file == NULL) {
     return NULL;
   }
-  if (name->length > FS_NAME_LENGHT) {
+  if (name->length > FS_NAME_LENGTH) {
     return NULL;
   }
   memcpy(new_file->name, name->path, name->length);
@@ -43,15 +43,14 @@ D_File *create_file(Path *name, char *content, size_t length, uint32_t mode) {
 
 D_File *create_directory(Path *name, uint32_t mode) {
   D_File *new_file = dandelion_alloc(sizeof(D_File), _Alignof(D_File));
-  if (name->length > FS_NAME_LENGHT) {
+  if (name->length > FS_NAME_LENGTH) {
     return NULL;
   }
   memcpy(new_file->name, name->path, name->length);
   new_file->type = DIRECTORY;
   new_file->child = NULL;
   new_file->hard_links = 0;
-  // directory where user has full permissions
-  new_file->mode = S_IFDIR | S_IRUSR | S_IWUSR | S_IXUSR;
+  new_file->mode = mode | S_IFDIR | S_IRUSR | S_IWUSR | S_IXUSR;
   return new_file;
 }
 
@@ -60,6 +59,13 @@ int link_file_to_folder(D_File *folder, D_File *file) {
     // TODO set proper error number
     return -1;
   };
+
+  // Check if file already exists in this directory to prevent duplicates
+  D_File *existing = find_file_in_dir(folder, (Path){.path = file->name, .length = namelen(file->name, FS_NAME_LENGTH)});
+  if (existing != NULL) {
+    return -1;
+  }
+
   // set file parent to folder
   file->parent = folder;
   // increase the number of hard links to the file
@@ -69,16 +75,24 @@ int link_file_to_folder(D_File *folder, D_File *file) {
     file->next = NULL;
   } else {
     D_File *current = folder->child;
-    if (namecmp(file->name, current->name, FS_NAME_LENGHT) < 0) {
+    int cmp_first = namecmp(file->name, FS_NAME_LENGTH, current->name, FS_NAME_LENGTH);
+    if (cmp_first < 0) {
       file->next = current;
       folder->child = file;
+    } else if (cmp_first == 0) {
+      file->hard_links -= 1;
+      return -1;
     } else {
+      // Find correct position to insert
       while (current->next != NULL) {
-        if (namecmp(file->name, current->next->name, FS_NAME_LENGHT) < 0) {
+        int cmp_next = namecmp(file->name, FS_NAME_LENGTH, current->next->name, FS_NAME_LENGTH);
+        if (cmp_next < 0) {
           break;
-        } else {
-          current = current->next;
+        } else if (cmp_next == 0) {
+          file->hard_links -= 1;
+          return -1;
         }
+        current = current->next;
       }
       file->next = current->next;
       current->next = file;
@@ -97,8 +111,9 @@ D_File *find_file_in_dir(D_File *directory, Path file) {
   }
   for (D_File *current = directory->child; current != NULL;
        current = current->next) {
+    size_t stored_name_len = namelen(current->name, FS_NAME_LENGTH);
     int cmp_result =
-        namecmp(current->name, file.path, MIN(file.length, FS_NAME_LENGHT));
+        namecmp(current->name, stored_name_len, file.path, file.length);
     if (cmp_result == 0) {
       return current;
     } else if (cmp_result > 0) {
@@ -138,7 +153,7 @@ D_File *create_directories(D_File *directory, Path path, char prevent_up) {
   }
   for (Path current_path = get_component_advance(&path);
        current_path.length > 0; current_path = get_component_advance(&path)) {
-    if (current_path.length > FS_NAME_LENGHT) {
+    if (current_path.length > FS_NAME_LENGTH) {
       return NULL;
     } else if (current_path.length == 1 && current_path.path[0] == '.') {
       // handle special case of single dot for current directory
@@ -160,10 +175,12 @@ D_File *create_directories(D_File *directory, Path path, char prevent_up) {
         directory = candidate_dir;
         continue;
       }
-      D_File *new_dir = dandelion_alloc(sizeof(D_File), _Alignof(D_File));
-      new_dir->type = DIRECTORY;
-      memcpy(new_dir->name, current_path.path, current_path.length);
-      new_dir->child = NULL;
+      uint32_t dir_mode = S_IRUSR | S_IWUSR | S_IXUSR;
+      D_File *new_dir = create_directory(&current_path, dir_mode);
+      if (new_dir == NULL) {
+        return NULL;
+      }
+
       int error = link_file_to_folder(directory, new_dir);
       if (error < 0) {
         dandelion_free(new_dir);
@@ -412,17 +429,16 @@ int fs_initialize(int *argc, char ***argv, char ***environ) {
   fs_root->parent = NULL;
   fs_root->child = NULL;
   fs_root->hard_links = 1;
+  // Set proper root directory mode
+  //fs_root->mode = S_IFDIR | S_IRUSR | S_IWUSR | S_IXUSR;
 
   // create stdio folder and stdout/stderr file
-  D_File *stdio_folder = dandelion_alloc(sizeof(D_File), _Alignof(D_File));
+  Path stdio_path = path_from_string("stdio");
+  D_File *stdio_folder = create_directory(&stdio_path, S_IRUSR | S_IWUSR | S_IXUSR);
   if (stdio_folder == NULL) {
     dandelion_exit(ENOMEM);
     return -1;
   }
-  memcpy(stdio_folder->name, "stdio", 6);
-  stdio_folder->type = DIRECTORY;
-  stdio_folder->child = NULL;
-  stdio_folder->hard_links = 0;
   if ((error = link_file_to_folder(fs_root, stdio_folder)) != 0) {
     return error;
   }
@@ -483,7 +499,7 @@ int fs_initialize(int *argc, char ***argv, char ***environ) {
       return -1;
     }
     int is_stdio_folder =
-        namecmp(set_path.path, "stdio", MIN(set_path.length, 5));
+        namecmp(set_path.path, set_path.length, "stdio", 5);
     size_t input_items = dandelion_input_buffer_count(set_index);
     for (size_t item_index = 0; item_index < input_items; item_index++) {
       IoBuffer *item_buffer = dandelion_get_input(set_index, item_index);
@@ -510,19 +526,19 @@ int fs_initialize(int *argc, char ***argv, char ***environ) {
       }
       if (is_stdio_folder == 0) {
         int is_stdin =
-            namecmp(file_path.path, "stdin", MIN(file_path.length, 5));
+            namecmp(file_path.path, file_path.length, "stdin", 5);
         if (is_stdin == 0) {
           error = open_existing_file(STDIN_FILENO, item_file, O_RDONLY, 0, 0);
           if (error != 0)
             return error;
         }
-        int is_argv = namecmp(file_path.path, "argv", MIN(file_path.length, 4));
+        int is_argv = namecmp(file_path.path, file_path.length, "argv", 4);
         if (is_argv == 0) {
           setup_charpparray(item_buffer->data, item_buffer->data_len, argc,
                             argv);
         }
         int is_environ =
-            namecmp(file_path.path, "environ", MIN(file_path.length, 7));
+            namecmp(file_path.path, file_path.length, "environ", 7);
         if (is_environ == 0) {
           int envc;
           setup_charpparray(item_buffer->data, item_buffer->data_len, &envc,
@@ -588,7 +604,7 @@ int add_output_from_file(D_File *file, Path previous_path, size_t set_index) {
   switch (file->type) {
   case FILE:
     // check name length an create string with complete file name
-    name_length = namelen(file->name, FS_NAME_LENGHT);
+    name_length = namelen(file->name, FS_NAME_LENGTH);
     new_buffer = dandelion_alloc(previous_path.length + name_length, 1);
     if (new_buffer == NULL) {
       return -1;
@@ -631,7 +647,7 @@ int add_output_from_file(D_File *file, Path previous_path, size_t set_index) {
     return 0;
   case DIRECTORY:
     // check name length and create a new string / path to recurse further
-    name_length = namelen(file->name, FS_NAME_LENGHT);
+    name_length = namelen(file->name, FS_NAME_LENGTH);
     new_buffer = dandelion_alloc(previous_path.length + name_length + 1, 1);
     if (new_buffer == NULL) {
       dandelion_exit(ENOMEM);
@@ -677,10 +693,10 @@ int fs_terminate() {
     for (D_File *out_file = set_directory->child; out_file != NULL;
          out_file = out_file->next) {
       // ignore argv, environ and stdin in the stdio folder
-      if (namecmp(set_ident.path, "stdio", MIN(set_ident.length, 5)) == 0) {
-        if (namecmp(out_file->name, "environ", 7) == 0 ||
-            namecmp(out_file->name, "argv", 4) == 0 ||
-            namecmp(out_file->name, "stdin", 5) == 0)
+      if (namecmp(set_ident.path, set_ident.length, "stdio", 5) == 0) {
+        if (namecmp(out_file->name, FS_NAME_LENGTH, "environ", 7) == 0 ||
+            namecmp(out_file->name, FS_NAME_LENGTH, "argv", 4) == 0 ||
+            namecmp(out_file->name, FS_NAME_LENGTH, "stdin", 5) == 0)
           continue;
       }
       add_output_from_file(out_file, empty_path, set_index);
